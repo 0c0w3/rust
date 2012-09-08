@@ -34,12 +34,16 @@ export future_pipe;
 #[doc = "The future type"]
 struct Future<A> {
     /*priv*/ mut state: FutureState<A>,
+
+    // FIXME(#2829) -- futures should not be copyable, because they close
+    // over fn~'s that have pipes and so forth within!
+    drop {}
 }
 
 priv enum FutureState<A> {
-    Pending(fn@() -> A),
+    Pending(fn~() -> A),
     Evaluating,
-    Forced(A)
+    Forced(~A)
 }
 
 /// Methods on the `future` type
@@ -71,7 +75,7 @@ fn from_value<A>(+val: A) -> Future<A> {
      * not block.
      */
 
-    Future {state: Forced(val)}
+    Future {state: Forced(~val)}
 }
 
 fn from_port<A:Send>(+port: future_pipe::client::waiting<A>) -> Future<A> {
@@ -88,12 +92,12 @@ fn from_port<A:Send>(+port: future_pipe::client::waiting<A>) -> Future<A> {
         port_ <-> *port;
         let port = option::unwrap(port_);
         match recv(port) {
-          future_pipe::completed(move data) => data
+            future_pipe::completed(move data) => data
         }
     }
 }
 
-fn from_fn<A>(+f: @fn() -> A) -> Future<A> {
+fn from_fn<A>(+f: ~fn() -> A) -> Future<A> {
     /*!
      * Create a future from a function.
      *
@@ -135,7 +139,7 @@ fn get_ref<A>(future: &r/Future<A>) -> &r/A {
 
     match future.state {
       Forced(ref v) => { // v here has type &A, but with a shorter lifetime.
-        return unsafe{ copy_lifetime(future, v) }; // ...extend it.
+        return unsafe{ copy_lifetime(future, &**v) }; // ...extend it.
       }
       Evaluating => {
         fail ~"Recursive forcing of future!";
@@ -150,7 +154,7 @@ fn get_ref<A>(future: &r/Future<A>) -> &r/A {
         fail ~"Logic error.";
       }
       Pending(move f) => {
-        future.state = Forced(f());
+        future.state = Forced(~f());
         return get_ref(future);
       }
     }
@@ -238,5 +242,15 @@ mod test {
     fn test_futurefail() {
         let f = spawn(|| fail);
         let _x: ~str = get(&f);
+    }
+
+    #[test]
+    fn test_sendable_future() {
+        let expected = ~"schlorf";
+        let f = do spawn |copy expected| { expected };
+        do task::spawn {
+            let actual = get(&f);
+            assert actual == expected;
+        }
     }
 }
